@@ -3,9 +3,14 @@ pipeline {
   options { timestamps() }
 
   environment {
-    DOCKER_HOST_IP = '172.31.47.162'                 // your Docker host
-    DOCKER_REPO    = 'djatl1/webapp'    // e.g. adeosinloyejr/webapp
-    IMAGE_TAG      = "build-${env.BUILD_NUMBER}"
+    // Where Ansible runs the build + push + deploy
+    ANSIBLE_HOST = '172.31.26.165'             // <<< update
+    ANSIBLE_DIR  = '/home/ubuntu/ansible'            // path on Ansible server for playbooks
+    BUILD_DIR    = "/home/ubuntu/ansible/builds/build-${env.BUILD_NUMBER}"
+
+    // Docker Hub
+    DOCKER_REPO = 'djatl1/webapp2'                    // <<< update if different
+    IMAGE_TAG   = "build-${env.BUILD_NUMBER}"
   }
 
   stages {
@@ -23,70 +28,51 @@ pipeline {
       }
     }
 
-    stage('Copy WAR to Docker host') {
+    stage('Ship artifact + Dockerfile to Ansible') {
       steps {
-        sshagent(credentials: ['ubuntu']) {
+        sshagent(credentials: ['ubuntu']) { // <<< Jenkins SSH cred id to reach Ansible
           sh '''
             set -e
-            echo "📤 Copying WAR to Docker host..."
-            scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-              ./webapp/target/webapp.war "ubuntu@${DOCKER_HOST_IP}:~/webapp.war"
+            WAR_LOCAL="webapp/target/webapp.war"
+            [ -f "$WAR_LOCAL" ] || { echo "WAR missing"; exit 1; }
 
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "ubuntu@${DOCKER_HOST_IP}" '
-              set -e
-              [ -f "$HOME/webapp.war" ] || { echo "❌ webapp.war missing on Docker host"; exit 1; }
-              echo "✅ WAR is on Docker host:"
-              ls -lh "$HOME/webapp.war"
-            '
+            echo "📤 Creating remote build dir on Ansible server..."
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${ANSIBLE_HOST} "mkdir -p ${BUILD_DIR}"
+
+            echo "📤 Copying WAR to Ansible server..."
+            scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$WAR_LOCAL" "ubuntu@${ANSIBLE_HOST}:${BUILD_DIR}/webapp.war"
+
+            echo "📝 Writing Dockerfile on Ansible server..."
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${ANSIBLE_HOST} "bash -lc 'cat > ${BUILD_DIR}/Dockerfile <<EOF
+FROM tomcat:9.0-jdk21-temurin
+COPY webapp.war /usr/local/tomcat/webapps/ROOT.war
+EXPOSE 8080
+EOF
+'"
           '''
         }
       }
     }
 
-   stage('Build & Push Docker Image') {
-  steps {
-    withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-      sshagent(credentials: ['ubuntu']) {
-        sh """
-          set -e
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "ubuntu@${DOCKER_HOST_IP}" 'bash -s' <<'EOSSH'
-set -e
-cd ~
-
-echo "📝 Writing Dockerfile..."
-cat > Dockerfile <<'EOF'
-FROM tomcat:9.0-jdk21-temurin
-COPY webapp.war /usr/local/tomcat/webapps/ROOT.war
-EXPOSE 8080
-EOF
-
-echo '${DOCKER_PASS}' | docker login -u '${DOCKER_USER}' --password-stdin
-docker build -t ${DOCKER_REPO}:${IMAGE_TAG} .
-docker tag ${DOCKER_REPO}:${IMAGE_TAG} ${DOCKER_REPO}:latest
-docker push ${DOCKER_REPO}:${IMAGE_TAG}
-docker push ${DOCKER_REPO}:latest
-EOSSH
-        """
-      }
-    }
-  }
-}
-
-
-    stage('Deploy Container') {
+    stage('Build, Push, and Deploy via Ansible') {
       steps {
-        sshagent(credentials: ['ubuntu']) {
-          sh '''
-            set -e
-            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "ubuntu@${DOCKER_HOST_IP}" "
+        withCredentials([usernamePassword(
+          credentialsId: 'dockerhub-creds',         // <<< your DockerHub cred id
+          usernameVariable: 'DOCKER_USER',
+          passwordVariable: 'DOCKER_PASS'
+        )]) {
+          sshagent(credentials: ['ubuntu']) {
+            sh '''
               set -e
-              docker pull ${DOCKER_REPO}:${IMAGE_TAG} || true
-              docker rm -f webapp || true
-              docker run -d --name webapp -p 8080:8080 --restart unless-stopped ${DOCKER_REPO}:${IMAGE_TAG}
-              echo '✅ Container running:'
-              docker ps --filter name=webapp
-            "
-          '''
+              # Run Ansible playbook on the Ansible server, passing image + tag + build dir
+              ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${ANSIBLE_HOST} \
+                "export ANSIBLE_STDOUT_CALLBACK=yaml DOCKER_USER='${DOCKER_USER}' DOCKER_PASS='${DOCKER_PASS}'; \
+                 ansible-playbook ${ANSIBLE_DIR}/deploy.yml \
+                   -e docker_repo='${DOCKER_REPO}' \
+                   -e docker_tag='${IMAGE_TAG}' \
+                   -e build_dir='${BUILD_DIR}'"
+            '''
+          }
         }
       }
     }
