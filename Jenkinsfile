@@ -3,12 +3,12 @@ pipeline {
   options { timestamps() }
 
   environment {
-    // 🔧 FILL THESE IN
-    ANSIBLE_HOST_IP = '172.31.26.165'           // <-- your Ansible server private IP
-    DOCKER_REPO     = 'djatl1/webapp'          // <-- your Docker Hub repo
+    // 🔧 Update these to match your setup
+    ANSIBLE_HOST_IP = '172.31.26.165'      // your Ansible server private IP
+    DOCKER_REPO     = 'djatl1/webapp'      // Docker Hub repo (username/repo)
     IMAGE_TAG       = "build-${env.BUILD_NUMBER}"
 
-    // where on the Ansible server we’ll stage the files
+    // Where Jenkins will drop Dockerfile + webapp.war on the Ansible host
     REMOTE_DROP_DIR = '/home/ubuntu/ci_drop'
   }
 
@@ -30,7 +30,7 @@ pipeline {
 
     stage('Stage WAR & Dockerfile on Ansible host') {
       steps {
-        sshagent(credentials: ['ubuntu']) {   // 🔑 Jenkins credential ID for SSH key to Ansible host
+        sshagent(credentials: ['ubuntu']) {   // 🔑 Jenkins SSH credential ID for Ansible host
           sh """
             set -e
             echo "🪄 Preparing Dockerfile locally..."
@@ -59,24 +59,24 @@ EOF
 
     stage('Run Ansible Playbook (build image, push, deploy)') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+        withCredentials([usernamePassword(credentialsId: 'dockerhub-creds',
+                                          usernameVariable: 'DOCKER_USER',
+                                          passwordVariable: 'DOCKER_PASS')]) {
           sshagent(credentials: ['ubuntu']) {
-            // We export env on the remote before calling ansible-playbook
+            // Export Docker Hub creds on the remote, pass only non-secret vars via -e
             sh """
               set -e
               echo "🚀 Triggering Ansible playbook on Ansible host..."
-              ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${ANSIBLE_HOST_IP} '
-                set -e
-                cd ~/ansible
-
-                # Provide variables to Ansible via extra-vars (best is Vault for secrets in real life)
-                ansible-playbook -i inventory.ini deploy.yaml \\
-                  -e docker_repo="${DOCKER_REPO}" \\
-                  -e image_tag="${IMAGE_TAG}" \\
-                  -e drop_dir="${REMOTE_DROP_DIR}" \\
-                  -e dockerhub_user="${DOCKER_USER}" \\
-                  -e dockerhub_pass="${DOCKER_PASS}"
-              '
+              ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null ubuntu@${ANSIBLE_HOST_IP} 'bash -s' <<EOSSH
+set -e
+export DOCKER_USER='${DOCKER_USER}'
+export DOCKER_PASS='${DOCKER_PASS}'
+cd ~/ansible
+ansible-playbook -i inventory.ini deploy.yaml \\
+  -e docker_repo='${DOCKER_REPO}' \\
+  -e image_tag='${IMAGE_TAG}' \\
+  -e build_dir='${REMOTE_DROP_DIR}'
+EOSSH
             """
           }
         }
