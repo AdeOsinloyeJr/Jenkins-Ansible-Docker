@@ -1,0 +1,39 @@
+# === Terraform ===
+.terraform/                      # Local cache of modules/providers
+*.tfstate                       # Terraform state files
+*.tfstate.backup
+terraform.tfstate.*
+crash.log                       # Crash logs
+*.tfvars                        # Variable definitions (can contain secrets)
+
+# === Terragrunt ===
+.terragrunt-cache/
+
+# === General ===
+*.log
+*.bak
+*.tmp
+
+# === Editor / OS ===
+.DS_Store                      # macOS
+Thumbs.db                     # Windows
+.idea/                        # JetBrains IDEs
+.vscode/                      # VS Code settings
+*.swp                         # Vim swap files
+*.swo
+
+# === SSH Keys / Secrets ===
+*.pem
+*.key
+*.crt
+*.pub
+*.zip
+
+# === Git filter-repo backup ===
+.git-rewrite/
+
+# === Lock file (optional, ignore only if you don’t want to lock provider versions) ===
+# .terraform.lock.hcl
+.terraform/
+.terraform/
+.terraform/
